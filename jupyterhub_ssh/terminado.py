@@ -4,11 +4,11 @@ import websockets
 
 
 class Terminado:
-    def __init__(self, notebook_url, token, session):
+    def __init__(self, notebook_url, token, session, use_ssl = None):
         self.notebook_url = notebook_url
         self.token = token
         self.session = session
-
+        self.use_ssl = use_ssl
         self.headers = {"Authorization": f"token {self.token}"}
 
     async def __aenter__(self):
@@ -18,13 +18,13 @@ class Terminado:
         notebook_secure = self.notebook_url.scheme == "https"
 
         create_url = self.notebook_url / "api/terminals"
-        async with self.session.post(create_url, headers=self.headers) as resp:
+        async with self.session.post(create_url, headers=self.headers, ssl=self.use_ssl) as resp:
             data = await resp.json()
         self.terminal_name = data["name"]
         socket_url = self.notebook_url / "terminals/websocket" / self.terminal_name
         ws_url = socket_url.with_scheme("wss" if notebook_secure else "ws")
 
-        self.ws = await websockets.connect(str(ws_url), extra_headers=self.headers)
+        self.ws = await websockets.connect(str(ws_url), extra_headers=self.headers, ssl=self.use_ssl)
 
         return self
 
@@ -35,7 +35,7 @@ class Terminado:
         await self.ws.close()
 
         delete_url = self.notebook_url / "api/terminals" / self.terminal_name
-        async with self.session.delete(delete_url, headers=self.headers) as resp:
+        async with self.session.delete(delete_url, headers=self.headers, ssl=self.use_ssl) as resp:
             # If we send EOD on the websocket URL, the terminal is auto closed
             # But we should clean up regardless!
             if resp.status != 204 and resp.status != 404:

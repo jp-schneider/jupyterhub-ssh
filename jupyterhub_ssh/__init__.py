@@ -23,6 +23,7 @@ class NotebookSSHServer(asyncssh.SSHServer):
 
     def __init__(self, app, *args, **kwargs):
         self.app = app
+        self.use_ssl = None if app.ssl else False # None is default which is True
         super().__init__(*args, **kwargs)
 
     def connection_made(self, conn):
@@ -57,46 +58,49 @@ class NotebookSSHServer(asyncssh.SSHServer):
         # REST API reference:       https://jupyterhub.readthedocs.io/en/stable/_static/rest-api/index.html#operation--users--name--server-post
         # REST API implementation:  https://github.com/jupyterhub/jupyterhub/blob/187fe911edce06eb067f736eaf4cc9ea52e69e08/jupyterhub/apihandlers/users.py#L451-L497
         create_url = self.app.hub_url / "hub/api/users" / username / "server"
+        try:
+            async with session.post(create_url, ssl=self.use_ssl) as resp:
+                if resp.status == 201 or resp.status == 400:
+                    # FIXME: code 400 can mean "pending stop" or "already running",
+                    #        but we assume it means that the server is already
+                    #        running.
 
-        async with session.post(create_url) as resp:
-            if resp.status == 201 or resp.status == 400:
-                # FIXME: code 400 can mean "pending stop" or "already running",
-                #        but we assume it means that the server is already
-                #        running.
-
-                # Server started quickly
-                # We manually generate this, even though it's *bad*
-                # Mostly because when the server is already running, JupyterHub
-                # doesn't respond with the whole model!
-                return self.app.hub_url / "user" / username
-            elif resp.status == 202:
-                # Server start has been requested, now and potentially earlier,
-                # but hasn't started quickly and is pending spawn.
-                # We check for a while, reporting progress to user - until we're
-                # done
-                try:
-                    async with timeout(self.app.start_timeout):
-                        notebook_url = None
-                        self._conn.send_auth_banner("Starting your server...")
-                        while notebook_url is None:
-                            # FIXME: Exponential backoff + make this configurable
-                            await asyncio.sleep(0.5)
-                            notebook_url = await self.get_user_server_url(
-                                session, username
-                            )
-                            self._conn.send_auth_banner(".")
-                        self._conn.send_auth_banner("done!\n")
-                        return notebook_url
-                except asyncio.TimeoutError:
-                    # Server didn't start on time!
-                    self._conn.send_auth_banner("failed to start server on time!\n")
+                    # Server started quickly
+                    # We manually generate this, even though it's *bad*
+                    # Mostly because when the server is already running, JupyterHub
+                    # doesn't respond with the whole model!
+                    return self.app.hub_url / "user" / username
+                elif resp.status == 202:
+                    # Server start has been requested, now and potentially earlier,
+                    # but hasn't started quickly and is pending spawn.
+                    # We check for a while, reporting progress to user - until we're
+                    # done
+                    try:
+                        async with timeout(self.app.start_timeout):
+                            notebook_url = None
+                            self._conn.send_auth_banner("Starting your server...")
+                            while notebook_url is None:
+                                # FIXME: Exponential backoff + make this configurable
+                                await asyncio.sleep(0.5)
+                                notebook_url = await self.get_user_server_url(
+                                    session, username
+                                )
+                                self._conn.send_auth_banner(".")
+                            self._conn.send_auth_banner("done!\n")
+                            return notebook_url
+                    except asyncio.TimeoutError:
+                        # Server didn't start on time!
+                        self._conn.send_auth_banner("failed to start server on time!\n")
+                        return None
+                elif resp.status == 403:
+                    # Token is wrong!
                     return None
-            elif resp.status == 403:
-                # Token is wrong!
-                return None
-            else:
-                # FIXME: Handle other cases that pop up
-                resp.raise_for_status()
+                else:
+                    # FIXME: Handle other cases that pop up
+                    resp.raise_for_status()
+        except Exception as e:
+            logging.exception("Error starting server!")
+            raise e
 
     async def validate_password(self, username, token):
         self.username = username
@@ -153,7 +157,7 @@ class NotebookSSHServer(asyncssh.SSHServer):
         Handle data transfer once session has been fully established.
         """
         async with ClientSession() as client, Terminado(
-            self.notebook_url, self.token, client
+            self.notebook_url, self.token, client, self.use_ssl
         ) as terminado:
 
             # If a pty has been asked for, we tell terminado what the pty's current size is
@@ -218,6 +222,17 @@ class JupyterHubSSH(Application):
         8022,
         help="""
         Port the ssh server listens on
+        """,
+        config=True,
+    )
+
+    ssl = Bool(
+        True,
+        help="""
+        If the request should be done via ssl. 
+        Can be disabled for testing purposes.
+
+        Defaults to True.
         """,
         config=True,
     )

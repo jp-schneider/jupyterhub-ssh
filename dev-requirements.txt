@@ -1,3 +1,0 @@
-chartpress
-pytest
-pyyaml
