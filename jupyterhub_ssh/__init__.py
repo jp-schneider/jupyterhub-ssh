@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from functools import partial
+from ssl import SSLContext
 
 import asyncssh
 from aiohttp import ClientSession
@@ -23,7 +24,9 @@ class NotebookSSHServer(asyncssh.SSHServer):
 
     def __init__(self, app, *args, **kwargs):
         self.app = app
-        self.use_ssl = None if app.ssl else False # None is default which is True
+        ssl = SSLContext()
+        ssl.load_default_certs()
+        self.use_ssl = ssl if app.ssl else False # None is default which is True
         super().__init__(*args, **kwargs)
 
     def connection_made(self, conn):
